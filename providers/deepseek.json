@@ -1,0 +1,34 @@
+{
+  "id": "deepseek",
+  "name": "DeepSeek(官方 Responses API)",
+  "wire_api": "responses",
+  "base_url": "https://api.deepseek.com",
+  "env_key": "DEEPSEEK_API_KEY",
+  "auth_modes": [
+    "api_key"
+  ],
+  "requires_openai_auth": false,
+  "default_model": "deepseek-v4-flash",
+  "responses_support": "native",
+  "stream_format": "responses-sse",
+  "tool_calls": true,
+  "reasoning": "reasoning.effort 生效;reasoning.summary 接受但不产出内容",
+  "context_limit_tokens": null,
+  "retryable_errors": [
+    "429",
+    "5xx",
+    "stream-idle"
+  ],
+  "known_incompatibilities": [
+    "无状态:previous_response_id / conversation 不支持(会被静默忽略),多轮要靠客户端每轮重发上下文",
+    "store 恒为 false",
+    "truncation 不支持:超上下文直接 400",
+    "prompt_cache_key / context_management / background / metadata 等被静默忽略",
+    "tools 只支持 function 与 web_search,其余类型忽略"
+  ],
+  "matrix": {
+    "status": "untested",
+    "note": "需 DEEPSEEK_API_KEY;重点验多轮(无 previous_response_id)与 function calling,用 provider_matrix 跑 10 项后回填"
+  },
+  "verified_at": "2026-08-26"
+}

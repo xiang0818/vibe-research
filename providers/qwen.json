@@ -1,0 +1,33 @@
+{
+  "id": "qwen",
+  "name": "通义千问(阿里云百炼 · OpenAI 兼容 Responses)",
+  "wire_api": "responses",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "env_key": "DASHSCOPE_API_KEY",
+  "auth_modes": [
+    "api_key"
+  ],
+  "requires_openai_auth": false,
+  "default_model": "qwen3.8-max",
+  "responses_support": "native",
+  "stream_format": "responses-sse",
+  "tool_calls": true,
+  "reasoning": "reasoning.effort 生效(优先于已废弃的 enable_thinking)",
+  "context_limit_tokens": null,
+  "retryable_errors": [
+    "429",
+    "5xx",
+    "stream-idle"
+  ],
+  "known_incompatibilities": [
+    "base_url 里的 {WorkspaceId} 必须换成自己的工作空间 ID —— 不换会被 validateProfile 当场拒绝",
+    "不支持 thinking_budget",
+    "previous_response_id 的多轮上下文只保留 7 天",
+    "模型可用性分地域(北京 / 新加坡 / 弗吉尼亚 / 法兰克福 / 东京),换地域要同时换 base_url"
+  ],
+  "matrix": {
+    "status": "untested",
+    "note": "需 DASHSCOPE_API_KEY + WorkspaceId"
+  },
+  "verified_at": "2026-08-26"
+}

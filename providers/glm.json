@@ -1,0 +1,31 @@
+{
+  "id": "glm",
+  "name": "智谱 GLM(经阿里云百炼 · OpenAI 兼容 Responses)",
+  "wire_api": "responses",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "env_key": "DASHSCOPE_API_KEY",
+  "auth_modes": [
+    "api_key"
+  ],
+  "requires_openai_auth": false,
+  "default_model": "glm-5.2",
+  "responses_support": "native",
+  "stream_format": "responses-sse",
+  "tool_calls": true,
+  "context_limit_tokens": null,
+  "retryable_errors": [
+    "429",
+    "5xx",
+    "stream-idle"
+  ],
+  "known_incompatibilities": [
+    "🔴 智谱**官方开放平台**(open.bigmodel.cn)截至 2026-08-26 没有原生 /responses,只有 issue 里的需求;所以这里走百炼托管的 GLM-5.2",
+    "要直连智谱官方就得自己架 Responses→Chat 网关,并把 responses_support 改成 gateway",
+    "base_url 里的 {WorkspaceId} 必须换成自己的工作空间 ID"
+  ],
+  "matrix": {
+    "status": "untested",
+    "note": "需 DASHSCOPE_API_KEY + WorkspaceId;直连智谱需网关"
+  },
+  "verified_at": "2026-08-26"
+}

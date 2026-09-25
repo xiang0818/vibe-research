@@ -1,0 +1,129 @@
+/**
+ * 算式自查。**用例全部来自一次真实辩论的产出** ——
+ * 引用来的数字能跟资料包比对，算出来的数字比不了，于是它成了唯一一类
+ * 「谁都没在看」的数字，而它就摆在核对过的数字旁边，看着一样可信。
+ */
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { auditNumbers, checkStatedArithmetic } from "../src/arithmetic.ts";
+
+const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+
+const one = (line: string) => {
+  const r = checkStatedArithmetic(line);
+  assert.equal(r.length, 1, `应当识别出恰好一条算式，实际 ${r.length} 条：${line}`);
+  return r[0]!;
+};
+
+test("🔴 真实案例:同比算反了方向", () => {
+  // 原文:「2026H1 扣非 444.64 亿元，同比仅增 +0.2%（2025H1 为 453.90 亿元）」
+  const c = one("444.64 ÷ 453.90 − 1 = +0.2%");
+  assert.equal(c.ok, false);
+  assert.ok(Math.abs(c.recomputed - -2.04) < 0.01, `重算应约 −2.04%，得到 ${c.recomputed}`);
+});
+
+test("🔴 真实案例:结果与它自己给的两个数对不上", () => {
+  // 原文:「2025 全年同比 +7.2%（822.93 亿 vs 747.53 亿）」—— 822.93/747.53 其实是 +10.1%
+  const c = one("822.93 / 747.53 - 1 = 7.2%");
+  assert.equal(c.ok, false);
+  assert.ok(Math.abs(c.recomputed - 10.09) < 0.05);
+});
+
+test("算对了就不该报", () => {
+  assert.equal(one("444.64 ÷ 453.90 − 1 = −2.04%").ok, true);
+  assert.equal(one("922.78 亿 − 547.03 亿 = 375.75 亿元").ok, true);
+  assert.equal(one("205.5 × 4 = 822.0").ok, true);
+});
+
+test("🔴 证据引用与期间标签要先剥掉 —— 这正是我们要求模型写的那种形状", () => {
+  // 不剥的话这一条**一条都识别不出来**，等于这层校验对规范写法完全失效。
+  const c = one("2026H1 444.64 亿 [ev-baddcc246399] ÷ 2025H1 453.90 亿 [ev-4839f9cd9cec] − 1 = −2.04%");
+  assert.equal(c.ok, true);
+  // 期间标签必须**整体**剥掉：只剥字母会留下 `2026` 被当成运算数
+  const bad = one("2026H1 444.64 亿 [ev-a1b2c3] ÷ 2025H1 453.90 亿 [ev-d4e5f6] − 1 = +0.2%");
+  assert.equal(bad.ok, false);
+});
+
+test("正号必须认 —— 真实文本写的就是 `= +0.2%`", () => {
+  // 第一版不认正号，于是那句错话整条识别不出来、安然过关
+  assert.equal(checkStatedArithmetic("100 − 40 = +60").length, 1);
+});
+
+test("没有算式就不该硬凑一条", () => {
+  assert.equal(checkStatedArithmetic("PE_TTM 19.87 倍，PB 6.44 倍").length, 0);
+  assert.equal(checkStatedArithmetic("2025 年和 2024 年的对比").length, 0);
+});
+
+/* ── 三档分类 ── */
+
+const claims = (line: string) => [...line.matchAll(/-?\d+(?:\.\d+)?/g)]
+  .map((m) => ({ n: Number(m[0]), raw: m[0]! }));
+const bound = (n: number, pool: number[]) => pool.some((v) => Math.abs(v - n) < 1e-6);
+
+test("三档必须分开报:对得上 / 算式自洽 / 没着落", () => {
+  const a = auditNumbers(
+    // ⚠️ 结果要带 %：不带 % 时 444.64/453.90−1 = −0.0204，写成 −2.04 本身就是错的
+    //    （第一版用例就漏了这个 %，被校验器当场判错 —— 是用例写错不是校验器错）
+    ["扣非 444.64 亿。", "444.64 ÷ 453.90 − 1 = -2.04%", "历史中枢在 30 倍附近。"].join("\n"),
+    [444.64, 453.90], claims, bound,
+  );
+  assert.equal(a.bound >= 2, true, "引用来的应当算 bound");
+  assert.ok(a.derived >= 1, "算式里的结果应当算 derived");
+  assert.ok(a.loose.some((l) => l.value === 30), "凭空出现的 30 应当落进「没着落」");
+  assert.equal(a.badMath.length, 0);
+});
+
+test("🔴 算错的必须进 badMath —— 这是唯一能断言「这里错了」的一类", () => {
+  const a = auditNumbers("444.64 ÷ 453.90 − 1 = +0.2%", [444.64, 453.90], claims, bound);
+  assert.equal(a.badMath.length, 1);
+  assert.ok(Math.abs(a.badMath[0]!.recomputed - -2.04) < 0.01);
+});
+
+/* ── 覆盖率:用例全部抄自第二次真实辩论的产出 ────────────────────────────
+ * 🔴 第一版只支持 `A ÷ B − 1 = R%` 与 `− + ×`,于是一段**写满算式**的产出只认出 1 条 ——
+ *    而「识别不到」和「没有算式可查」在结果上长得一模一样,不测就发现不了。
+ */
+
+test("🔴 纯除法必须支持 —— 实测里最常见的形状", () => {
+  for (const line of [
+    "2025H1 扣非净利 453.90 亿元 ÷ 2025H1 营收 910.94 亿元 = 净利率 49.83%",
+    "2026H1 扣非净利 444.64 亿元 ÷ 2026H1 营收 922.78 亿元 = 净利率 48.19%",
+    "隐含 ROE ≈ PB ÷ PE-static = 6.43 ÷ 18.14 = 35.4%",
+    "现价 1291.79 元 [ev-3798205d30c1] ÷ 2025 年度 EPS 65.66 元 [ev-1134ccc6e9e3] = 19.67 倍",
+  ]) {
+    const r = checkStatedArithmetic(line);
+    assert.equal(r.length, 1, `没识别出算式:${line}`);
+    assert.equal(r[0]!.ok, true, `重算应当通过:${line} → 得到 ${r[0]!.recomputed}`);
+  }
+});
+
+test("运算符与数字之间的标签不能挡住识别", () => {
+  // `÷ 营收 910.94`、`= 净利率 49.83%` —— 不留这个口子，这类写法一条都识别不出来
+  assert.equal(checkStatedArithmetic("A 453.90 亿元 ÷ 营收 910.94 亿元 = 净利率 49.83%").length, 1);
+});
+
+test("🔴 没有算式的句子一条都不该报", () => {
+  // ⚠️ **挡住误报的是字符类，不是间隙宽度**：实测把间隙从 8 放宽到 40 字，
+  //    下面这些照样一条都不匹配 —— 因为 LABEL 排除了数字 / 运算符 / 逗号，
+  //    跨不到无关的数上去。（第一版这条测试写的是「间隙不能太宽」，
+  //    但把宽度改到 40 它照样全绿 —— 断言与实际承重的机制对不上。）
+  for (const line of [
+    "差额仅 0.53 亿元（占比 0.12%）",
+    "PE_TTM 19.87 倍，PB 6.44 倍",
+    "2025 年和 2024 年的对比",
+    "历史 PE 中枢长期在 25–30 倍区间",
+  ]) {
+    assert.equal(checkStatedArithmetic(line).length, 0, `不该识别出算式:${line}`);
+  }
+  // 真正承重的那一条：标签里**不许含数字**。含了就会跨到无关的数上去。
+  const m = /const LABEL = String\.raw`([^`]+)`/.exec(
+    fs.readFileSync(path.join(SRC, "arithmetic.ts"), "utf8"),
+  );
+  assert.ok(m, "LABEL 不见了或写法变了");
+  assert.ok(/\\d/.test(m![1]!), "LABEL 必须把数字排除在外 —— 否则它会跨到无关的数上去");
+});

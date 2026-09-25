@@ -1,0 +1,6 @@
+#!/usr/bin/env sh
+# macOS / Linux 一键启动：预检后由 startup.ts 同时管理本机 API 与浏览器界面。
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+node "$ROOT/scripts/check-node.mjs"
+exec node "$ROOT/orchestrator/src/startup.ts" "$@"

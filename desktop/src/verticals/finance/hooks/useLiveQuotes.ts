@@ -1,0 +1,161 @@
+// 自选股快照轮询，不是逐笔实时行情。
+//
+// 几个刻意的选择：
+// - 每次明确要求 fresh，跳过产品的 5 分钟缓存；上游仍可能延迟。
+// - 请求完成后等 3 秒再取，不承诺数据每 3 秒更新。
+// - **递归 setTimeout 而不是 setInterval**：单次请求实测 ~750ms，网络一慢 setInterval
+//   会让请求首尾叠在一起。改成「上一次结束后再等 N 秒」，永远不会堆叠。
+// - **非交易时段自动暂停**：收盘后数据不再变化，继续轮询既无意义又给上游添压。
+//   手动刷新按钮仍然可用。
+// - **页面切走时暂停**：用户看不到的时候不该继续消耗流量（浏览器自身也会节流后台定时器）。
+// - **失败退避**：连续失败时间隔翻倍（上限 30 秒），成功后立刻复位，避免断网时疯狂重试。
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, type Quote } from "@/lib/api";
+import { isAnyMarketTrading, tradingMarketSymbols } from "@/lib/marketSymbol";
+import { quoteSnapshotTime } from "@/lib/quoteSnapshot";
+
+export const LIVE_INTERVAL_MS = 3000;
+const MAX_BACKOFF_MS = 30_000;
+
+/** 自选中任一市场开盘就轮询；空参数保留旧的 A 股语义。 */
+export const isTradingHours = (codes: string[] = [], at = new Date()): boolean => isAnyMarketTrading(codes, at);
+
+export interface LiveQuotesState {
+  quotes: Record<string, Quote>;
+  loading: boolean;
+  /** 已显示价格中最早的源取数时刻（ms）；缺失时为 null */
+  updatedAt: number | null;
+  /** 轮询是否真的在跑（开关开着 ≠ 在跑：非交易时段 / 页面切走都会暂停） */
+  polling: boolean;
+  error: string | null;
+  /** 手动刷新（任何时候都可用，不受交易时段限制） */
+  refresh: () => void;
+}
+
+export function useLiveQuotes(codes: string[], enabled: boolean): LiveQuotesState {
+  const [quotes, setQuotes] = useState<Record<string, Quote>>({});
+  const [loading, setLoading] = useState(false);
+  const [polling, setPolling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // 用 ref 存最新的 codes，让轮询循环不必因为 codes 变化而重建
+  const codesRef = useRef(codes);
+  codesRef.current = codes;
+
+  const failuresRef = useRef(0);
+  const inFlightRef = useRef(false);
+  const staleRef = useRef(false);          // 请求飞行途中自选变过 / 有请求被跳过
+  const fetchRef = useRef<(() => Promise<boolean>) | null>(null);
+
+  const fetchOnce = useCallback(async (onlyCodes?: string[]): Promise<boolean> => {
+    const cs = onlyCodes ?? codesRef.current;
+    if (!cs.length) {
+      if (!onlyCodes) setQuotes({});
+      return true;
+    }
+    if (inFlightRef.current) {
+      // 上一次还没回来，跳过这一拍；但要记下来，等它回来后补拉一次。
+      // 否则「首次请求在飞 → 用户此时粘贴新代码」会让新代码的行情永远缺失
+      // （默认不开轮询时没有下一拍来兜底，只能手动刷新）。
+      staleRef.current = true;
+      return true;
+    }
+    inFlightRef.current = true;
+    const requested = cs.join(",");
+    setLoading(true);
+    try {
+      const data = await api.quote(requested, true);
+      // 自动轮询只拉开盘市场，必须与休市市场已有快照合并；首次 / 手动刷新才整体替换。
+      setQuotes((prev) => onlyCodes ? { ...prev, ...data } : data);
+      setError(null);
+      failuresRef.current = 0;
+      return true;
+    } catch {
+      failuresRef.current += 1;
+      // 第一次失败先不打扰用户（可能只是一次网络抖动），连续失败才提示
+      if (failuresRef.current >= 2) setError("行情获取失败，正在重试…");
+      return false;
+    } finally {
+      inFlightRef.current = false;
+      setLoading(false);
+      // 这一趟拉的是不是已经过期的名单？过期就立刻补一次（只补一次，不会滚雪球：
+      // 补拉时 staleRef 已复位，只有再次发生变动才会再补）。
+      const changed = !onlyCodes && codesRef.current.join(",") !== requested;
+      if (staleRef.current || changed) {
+        staleRef.current = false;
+        void fetchRef.current?.();
+      }
+    }
+  }, []);
+  fetchRef.current = fetchOnce;
+
+  const refresh = useCallback(() => {
+    void fetchOnce();
+  }, [fetchOnce]);
+
+  // 首次进入 / 自选变化：立即拉一次（与开关无关，页面总要有数据）
+  useEffect(() => {
+    void fetchOnce();
+  }, [codes, fetchOnce]);
+
+  // 轮询循环
+  useEffect(() => {
+    // ⚠️ `cancelled` 与 `timer` 都是**这一次 effect 的局部变量**，不能用 ref 共享。
+    // 循环体里有 `await`：cleanup 执行时若某一拍正卡在请求中，它返回后会照常排下一拍，
+    // 于是旧循环「复活」并与新循环并行，实际频率翻倍（React StrictMode 的
+    // mount→unmount→mount 必然触发，生产环境里切换开关同样会）。
+    // 所以每次 await 之后都要重新检查 cancelled，且定时器句柄不跨 effect 共享。
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const clear = () => {
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    const shouldRun = () => enabled && !document.hidden && isTradingHours(codesRef.current) && codesRef.current.length > 0;
+
+    const loop = async () => {
+      if (cancelled) return;
+      if (!shouldRun()) {
+        setPolling(false);
+        // 没在跑也要保持一个心跳，好在开盘 / 页面切回来时自动恢复
+        timer = window.setTimeout(loop, 10_000);
+        return;
+      }
+      setPolling(true);
+      const ok = await fetchOnce(tradingMarketSymbols(codesRef.current));
+      if (cancelled) return;          // 请求期间被卸载/切换：到此为止，别再排下一拍
+      const wait = ok
+        ? LIVE_INTERVAL_MS
+        : Math.min(LIVE_INTERVAL_MS * 2 ** failuresRef.current, MAX_BACKOFF_MS);
+      timer = window.setTimeout(loop, wait);
+    };
+
+    if (enabled) {
+      void loop();
+    } else {
+      setPolling(false);
+    }
+
+    // 页面切回来时立刻重新评估，不用等下一拍
+    const onVisible = () => {
+      if (!document.hidden && enabled && !cancelled) {
+        clear();
+        void loop();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      cancelled = true;
+      clear();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [enabled, fetchOnce]);
+
+  return { quotes, loading, updatedAt: quoteSnapshotTime(quotes), polling, error, refresh };
+}

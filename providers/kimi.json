@@ -1,0 +1,31 @@
+{
+  "id": "kimi",
+  "name": "Kimi(经阿里云百炼 · OpenAI 兼容 Responses)",
+  "wire_api": "responses",
+  "base_url": "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+  "env_key": "DASHSCOPE_API_KEY",
+  "auth_modes": [
+    "api_key"
+  ],
+  "requires_openai_auth": false,
+  "default_model": "kimi-k2.7-code",
+  "responses_support": "native",
+  "stream_format": "responses-sse",
+  "tool_calls": true,
+  "context_limit_tokens": null,
+  "retryable_errors": [
+    "429",
+    "5xx",
+    "stream-idle"
+  ],
+  "known_incompatibilities": [
+    "这里走的是**百炼托管**而非月之暗面官方端点:官方端点是否提供 /responses 尚未核实,别想当然",
+    "base_url 里的 {WorkspaceId} 必须换成自己的工作空间 ID",
+    "模型名以百炼控制台实际可用的为准(kimi-k2.7-code / kimi-k2.7-code-highspeed / kimi-k2.5 等)"
+  ],
+  "matrix": {
+    "status": "untested",
+    "note": "需 DASHSCOPE_API_KEY + WorkspaceId;官方直连待核实"
+  },
+  "verified_at": "2026-08-26"
+}
